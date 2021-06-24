@@ -5,76 +5,59 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 
-class AttentionDecoderV2(nn.Module):
+class AttentionDecoder(pl.LightningModule):
     """
         Use seq to seq model to modify the calculation method of attention weight
     """
 
-    def __init__(self, hidden_size, output_size, dropout_p=0.1):
-        super(AttentionDecoderV2, self).__init__()
-        self.hidden_size = hidden_size
+    def __init__(self, encoder_hidden_size, decoder_hidden_size, output_size, dropout_p=0.1):
+        super(AttentionDecoder, self).__init__()
+        self.encoder_hidden_size = encoder_hidden_size
+        self.decoder_hidden_size = decoder_hidden_size
         self.output_size = output_size
         self.dropout_p = dropout_p
 
-        self.embedding = nn.Embedding(self.output_size, self.hidden_size)
-        self.attn_combine = nn.Linear(self.hidden_size * 2, self.hidden_size)
-        self.dropout = nn.Dropout(self.dropout_p)
-        self.gru = nn.GRU(self.hidden_size, self.hidden_size)
-        self.out = nn.Linear(self.hidden_size, self.output_size)
+        self.lstm = nn.LSTM(self.output_size * 2, self.decoder_hidden_size, num_layers=2)
+        self.W_o = nn.Linear(self.output_size, self.output_size)
+        self.W_c = nn.Linear(self.decoder_hidden_size + self.encoder_hidden_size, self.output_size)
+        self.W_h = nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size)
+        self.W_v = nn.Linear(self.encoder_hidden_size, self.decoder_hidden_size)
+        self.beta_T = nn.Linear(self.decoder_hidden_size, 1)
 
-        # test
-        self.vat = nn.Linear(hidden_size, 1)
+        self.rnn_state = None
+        self.enc_outs = None
 
-    def forward(self, input, hidden, encoder_outputs):
-        embedded = self.embedding(input)  # Word embedding on the previous output
-        embedded = self.dropout(embedded)
-        # test
-        batch_size = encoder_outputs.shape[1]
-        alpha = hidden + encoder_outputs  # Feature fusion +/concat can actually be used
-        alpha = alpha.view(-1, alpha.shape[-1])
-        attn_weights = self.vat(
-            torch.tanh(alpha))  # Reduce encoder_output: batch*seq*features to reduce the dimension of features to 1
-        attn_weights = attn_weights.view(-1, 1, batch_size).permute((2, 1, 0))
-        attn_weights = F.softmax(attn_weights, dim=2)
+    def forward(self, y_prev, o_prev, hidden_prev):
+        """
+            e_it = β^T tanh(W_h x h_(i−1) + W_v x ˜v_t)
+            α_t = softmax(e_t)
+            c_i = sum(α_it x v_t)
+            h_t = RNN(h_(t−1), [y_(t−1);o_(t−1)])
+            o_t = tanh(W_c[h_t;c_t])
+            p(y_(t+1) | y_1, ..., y_t, V˜ ) = softmax(W_o x o_t)
+        """
 
-        # Find the weight of the last output and hidden state
-        # attn_weights = F.softmax(
-        #     self.attn(torch.cat((embedded, hidden[0]), 1)), dim=1)
+        whh = self.W_h(hidden_prev)
+        wvv = self.W_v(self.enc_outs)
+        th = torch.tanh(whh + wvv)
+        e = self.beta_T(th)
+        alpha = torch.softmax(e, dim=1)
+        alpha = alpha.permute(0, 2, 1)
+        context = torch.bmm(alpha, self.enc_outs)
+        rnn_inp = torch.cat((y_prev, o_prev), dim=2)
 
-        attn_applied = torch.matmul(attn_weights,
-                                    encoder_outputs.permute(
-                                        (1, 0, 2)))  # Matrix multiplication，bmm（8×1×56，8×56×256）=8×1×256
-        if len(embedded.shape)==1:
-            embedded = embedded.unsqueeze(0)
-        output = torch.cat((embedded, attn_applied.squeeze(1)),
-                           1)  # The last output and attention feature, make a linear + GRU
-        output = self.attn_combine(output).unsqueeze(0)
+        hidden, self.rnn_state = self.lstm(rnn_inp, self.rnn_state)
 
-        output = F.relu(output)
-        output, hidden = self.gru(output, hidden)
+        hc = torch.cat((hidden, context), dim=2)
+        o = torch.tanh(self.W_c(hc))
+        y = F.softmax(self.W_o(o), dim=0)
 
-        output = F.log_softmax(self.out(output[0]), dim=1)  # Finally output a probability
-        return output, hidden, attn_weights
+        return y, o, hidden
 
-    def initHidden(self, batch_size):
-        result = Variable(torch.zeros(1, batch_size, self.hidden_size))
-
+    def init_hidden(self, batch_size):
+        result = Variable(torch.randn(batch_size, 1, self.decoder_hidden_size))
         return result
 
-
-class DecoderV2(pl.LightningModule):
-    '''
-        decoder from image features
-    '''
-
-    def __init__(self, nh=256, nclass=13, dropout_p=0.1):
-        super(DecoderV2, self).__init__()
-        self.hidden_size = nh
-        self.decoder = AttentionDecoderV2(nh, nclass, dropout_p)
-
-    def forward(self, input, hidden, encoder_outputs):
-        return self.decoder(input, hidden, encoder_outputs)
-
-    def initHidden(self, batch_size):
-        result = Variable(torch.zeros(1, batch_size, self.hidden_size))
-        return result
+    def init_rnn_state(self):
+        return torch.randn(2, 1, self.decoder_hidden_size).to(self.device), \
+               torch.randn(2, 1, self.decoder_hidden_size).to(self.device)

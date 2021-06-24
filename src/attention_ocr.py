@@ -5,22 +5,23 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 
-from src.modules.decoder import DecoderV2
-from src.modules.encoder import CNN
+from src.modules.decoder import AttentionDecoder
+from src.modules.encoder import Encoder
 from src.utils import dataset
 from src.utils import helpers
 
 
 class AttentionOcr(pl.LightningModule):
-    def __init__(self, img_h, n_hidden, batch_size, alphabet=None, dual_optimizers=False):
+    def __init__(self, img_h, n_hidden, batch_size, alphabet, h_params):
         super(AttentionOcr, self).__init__()
 
+        self.h_params = h_params
+        self.lr = self.h_params["lr"]
         self.n_class = len(alphabet) + 3
-        self.encoder = CNN(img_h, 1, n_hidden)
-        self.decoder = DecoderV2(n_hidden, self.n_class, dropout_p=0.1)
-        self.criterion = nn.NLLLoss()
+        self.encoder = Encoder(img_h, 1, n_hidden)
+        self.decoder = AttentionDecoder(n_hidden, 128, self.n_class, dropout_p=0.1)
+        self.criterion = nn.CrossEntropyLoss()
         self.converter = helpers.StrLabelConverterForAttention(alphabet)
-        self.dual_optimizers = dual_optimizers
         # Initialise Weights
         self.encoder.apply(helpers.weights_init)
         self.decoder.apply(helpers.weights_init)
@@ -30,8 +31,7 @@ class AttentionOcr(pl.LightningModule):
         self.image_placeholder = torch.FloatTensor(batch_size, 3, img_h, img_h)
 
     def training_step(self, train_batch, batch_idx, optimizer_idx=None):  # optimizer_idx is for dual_optimizer
-        teach_forcing_prob = 1
-
+        teach_forcing_prob = 0.5
         cpu_images, cpu_texts = train_batch
         b = cpu_images.size(0)
         target_variable = self.converter.encode(cpu_texts)
@@ -39,39 +39,54 @@ class AttentionOcr(pl.LightningModule):
         target_variable = target_variable.to(self.device)
         self.image_placeholder = self.image_placeholder.to(self.device)
 
-        encoder_outputs = self.encoder(self.image_placeholder)
-        decoder_input = target_variable[0]
-        decoder_hidden = self.decoder.initHidden(b).to(self.device)
+        self.decoder.enc_outs = self.encoder(self.image_placeholder).permute_gates(1, 0, 2)
+        #SOS
+        decoder_y = target_variable[0].to('cpu')
+        decoder_y = self.get_onehot(decoder_y, self.n_class)
+        decoder_y = decoder_y.unsqueeze(1)
+        decoder_hidden = self.decoder.init_hidden(b).to(self.device)
+        decoder_out = decoder_y
+
+        self.decoder.rnn_state = self.decoder.init_rnn_state()
 
         loss = 0.0
-        teach_forcing = True if random.random() > teach_forcing_prob else False
-        if teach_forcing:
-            # Teacher Mandatory: Use the target label as the next input
-            for di in range(1, target_variable.shape[0]):  # Maximum string length
-                decoder_output, decoder_hidden, decoder_attention = self.decoder(
-                    decoder_input, decoder_hidden, encoder_outputs)
-                loss += self.criterion(decoder_output, target_variable[di])  # Predict one character at a time
-                decoder_input = target_variable[di]  # Teacher forcing/Previous output
-        else:
-            for di in range(1, target_variable.shape[0]):
-                decoder_output, decoder_hidden, decoder_attention = self.decoder(
-                    decoder_input, decoder_hidden, encoder_outputs)
-                loss += self.criterion(decoder_output, target_variable[di])  # Predict one character at a time
-                top_v, top_i = decoder_output.data.topk(1)
-                ni = top_i.squeeze()
-                decoder_input = ni
+        for di in range(1, target_variable.shape[0]):  # Maximum string length
+            decoder_y, decoder_out, decoder_hidden = self.decoder(
+                    decoder_y, decoder_out, decoder_hidden)
+            loss += self.criterion(decoder_y.squeeze(1), target_variable[di])
+
+        # teach_forcing = True if random.random() > teach_forcing_prob else False
+        # if teach_forcing:
+        #     # Teacher Mandatory: Use the target label as the next input
+        #     for di in range(1, target_variable.shape[0]):  # Maximum string length
+        #         decoder_output, decoder_hidden, decoder_attention = self.decoder(
+        #             decoder_input, decoder_hidden, encoder_outputs)
+        #         loss += self.criterion(decoder_output, target_variable[di])  # Predict one character at a time
+        #         decoder_input = target_variable[di]  # Teacher forcing/Previous output
+        # else:
+        #     for di in range(1, target_variable.shape[0]):
+        #         decoder_output, decoder_hidden, decoder_attention = self.decoder(
+        #             decoder_input, decoder_hidden, encoder_outputs)
+        #         loss += self.criterion(decoder_output, target_variable[di])  # Predict one character at a time
+        #         top_v, top_i = decoder_output.data.topk(1)
+        #         ni = top_i.squeeze()
+        #         decoder_input = ni
 
         self.log('train_loss', loss, logger=True)
         return loss
 
+    def get_onehot(self, arr, max_value):
+        arr = arr.to('cpu')
+        return torch.zeros(len(arr), max_value).scatter_(1, arr.unsqueeze(1), 1.).to(self.device)
+
+    # def configure_optimizers(self):
+    #     encoder_optimizer = torch.optim.Adam(self.encoder.parameters())
+    #     decoder_optimizer = torch.optim.Adam(self.decoder.parameters())
+    #     return encoder_optimizer, decoder_optimizer
+
     def configure_optimizers(self):
-        if self.dual_optimizers:
-            encoder_optimizer = torch.optim.Adam(self.parameters())
-            decoder_optimizer = torch.optim.Adam(self.decoder.parameters())
-            return encoder_optimizer, decoder_optimizer
-        else:
-            optimizer = torch.optim.Adam(self.parameters())
-            return optimizer
+        optimizer = torch.optim.Adadelta(self.parameters(), lr=self.lr, weight_decay=self.h_params["weight_decay"])
+        return optimizer
 
 
 class DataModule(pl.LightningDataModule):

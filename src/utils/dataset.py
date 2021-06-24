@@ -37,7 +37,7 @@ class ListDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        label = line_splits[1]
+        label = " ".join(line_splits[1:])
 
         if self.target_transform is not None:
             label = self.target_transform(label)
