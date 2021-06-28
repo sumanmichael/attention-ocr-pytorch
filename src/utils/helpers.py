@@ -11,11 +11,17 @@ from torch.autograd import Variable
 
 
 def get_alphabet(filename='assets/devanagari-charset.txt'):
-    with open(filename,encoding="utf-8") as f:
-        data = f.readlines()
-        alphabet = [" "]
-        alphabet += [x.rstrip() for x in data]
-        alphabet = ''.join(alphabet)
+    # with open(filename, encoding="utf-8") as f:
+    #     data = f.readlines()
+    #     alphabet = [" "]
+    #     alphabet += [x.rstrip() for x in data]
+    #     alphabet = ''.join(alphabet)
+    y = list(',.0123456789-_|#')
+    extra_ords = [8205, 8220, 8221, 43251, 7386, 8211, 183, 8216, 8217, 8212, 8226, 221, 209, 2965, 3006, 2985, 2792,
+                  2798, 1040, 1041, 205, 173, 3585, 3594, 219, 65279, 216]
+    extraChars = [chr(i) for i in range(32, 127)] + [chr(i) for i in extra_ords]
+    CHARMAP = ['', '', '', ' '] + [chr(i) for i in range(2304, 2432)] + y + extraChars
+    alphabet = CHARMAP
     return alphabet
 
 
@@ -39,7 +45,7 @@ class StrLabelConverterForAttention(object):
         self.dict['$'] = 2  # blank identifier
         for i, item in enumerate(self.alphabet):
             # NOTE: 0 is reserved for 'blank' required by wrap_ctc
-            self.dict[item] = i + 3                     # Encode from 3
+            self.dict[item] = i + 3  # Encode from 3
 
     def encode(self, text):
         """Encode and align target_label
@@ -59,9 +65,9 @@ class StrLabelConverterForAttention(object):
             nb = len(text)
             targets = torch.ones(nb, max_length + 2) * 2  # use ‘blank’ for padding
             for i in range(nb):
-                targets[i][0] = 0  # start
+                targets[i][0] = 1  # start
                 targets[i][1:len(text[i]) + 1] = text[i]
-                targets[i][len(text[i]) + 1] = 1
+                targets[i][len(text[i]) + 1] = 2
             text = targets.transpose(0, 1).contiguous()
             text = text.long()
         return torch.LongTensor(text)
@@ -82,6 +88,7 @@ class StrLabelConverterForAttention(object):
 
         texts = list(self.dict.keys())[list(self.dict.values()).index(t)]
         return texts
+
 
 class StrLabelConverterForCTC(object):
     """Convert between str and label.
@@ -139,7 +146,8 @@ class StrLabelConverterForCTC(object):
         """
         if length.numel() == 1:
             length = length[0]
-            assert t.numel() == length, "text with length: {} does not match declared length: {}".format(t.numel(), length)
+            assert t.numel() == length, "text with length: {} does not match declared length: {}".format(t.numel(),
+                                                                                                         length)
             if raw:
                 return ''.join([self.alphabet[i - 1] for i in t])
             else:
@@ -150,7 +158,8 @@ class StrLabelConverterForCTC(object):
                 return ''.join(char_list)
         else:
             # batch mode
-            assert t.numel() == length.sum(), "texts with length: {} does not match declared length: {}".format(t.numel(), length.sum())
+            assert t.numel() == length.sum(), "texts with length: {} does not match declared length: {}".format(
+                t.numel(), length.sum())
             texts = []
             index = 0
             for i in range(length.numel()):
@@ -253,7 +262,8 @@ class Halo():
 
     def __call__(self, img):
         if random.random() < self.prob:
-            Gauss_map = self.create_kernel(32,60)  # Initialize a Gaussian kernel, 32 is the maximum value in the height direction, and 60 is the w direction
+            Gauss_map = self.create_kernel(32,
+                                           60)  # Initialize a Gaussian kernel, 32 is the maximum value in the height direction, and 60 is the w direction
             img1 = np.asarray(img)
             img1.flags.writeable = True  # Change the array to read-write mode
             nums = random.randint(1, self.nums)  # Randomly generate nums light points
@@ -368,3 +378,18 @@ def weights_init(model):
             nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.Linear):
             nn.init.constant_(m.bias, 0)
+
+
+def get_one_hot(l):
+    a = np.array(l)
+    b = np.zeros((a.size, 270))
+    b[np.arange(a.size), a] = 1
+    return torch.tensor(b)
+
+
+def modify_state_for_tf_compat(state_pytorch):
+    h, c = state_pytorch
+    ch_fw = torch.cat((c[0], h[0]), axis=1)
+    c1, h1, c2, h2 = [s.unsqueeze(0) for s in torch.chunk(ch_fw, 4, dim=1)]
+    (dec_h, dec_c) = (torch.cat((h1, h2), dim=0), torch.cat((c1, c2), dim=0))
+    return dec_h, dec_c

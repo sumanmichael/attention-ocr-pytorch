@@ -9,13 +9,13 @@ class Encoder(pl.LightningModule):
         CNN+BiLstm does feature extraction
     '''
 
-    def __init__(self, imgH, nc, nh, LOAD_PATH=r'C:\Users\suman\iiith\attention-ocr-pytorch\models\encoder.pth'):
+    def __init__(self, image_height, image_channels, enc_hidden_size, LOAD_PATH=r'C:\Users\suman\iiith\attention-ocr-pytorch\models\encoder.pth'):
         super(Encoder, self).__init__()
-        assert imgH % 16 == 0, 'imgH has to be a multiple of 16'
+        assert image_height % 16 == 0, 'imgH has to be a multiple of 16'
         #     TODO: Bias in Conv2D?
 
         self.cnn = nn.Sequential(  # 1x32x512    # CxHxW
-            Conv2dSamePadding(nc, 64, 3, 1, 0, bias=False), nn.ReLU(True), nn.MaxPool2d(2, 2),  # 64x32x256
+            Conv2dSamePadding(image_channels, 64, 3, 1, 0, bias=False), nn.ReLU(True), nn.MaxPool2d(2, 2),  # 64x32x256
             Conv2dSamePadding(64, 128, 3, 1, 0, bias=False), nn.ReLU(True), nn.MaxPool2d(2, 2),  # 128x8x128
             Conv2dSamePadding(128, 256, 3, 1, 0, bias=False), BatchNorm2d(256), nn.ReLU(True),  # 256x8x128
             Conv2dSamePadding(256, 256, 3, 1, 0, bias=False), nn.ReLU(True), nn.MaxPool2d((2, 1), (2, 1)),  # 256x4x128
@@ -26,7 +26,7 @@ class Encoder(pl.LightningModule):
             # nn.Dropout(p=0.5)
         )  # 512x1x128 CxHxW
         # TODO: Dropout
-        self.rnn = nn.LSTM(input_size=512, hidden_size=nh, bidirectional=True)
+        self.rnn = nn.LSTM(input_size=512, hidden_size=enc_hidden_size, bidirectional=True)
 
         if LOAD_PATH:
             self.load_state_dict(torch.load(LOAD_PATH))
@@ -42,6 +42,7 @@ class Encoder(pl.LightningModule):
         #     #     print(input.permute(0,2,3,1)[0][0][0])
         # conv = input
         # print(conv.permute(0,2,3,1)[0][0][0])
+
         b, c, h, w = conv.size()
         assert h == 1, "the height of conv must be 1"
 
