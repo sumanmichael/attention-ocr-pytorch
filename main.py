@@ -6,6 +6,7 @@ from src.data import DataModule
 from src.utils import helpers
 from src.defaults import *
 torch.backends.cudnn.enabled = False
+
 if __name__ == "__main__":
     dm = DataModule(train_batch_size=2, val_batch_size=2, workers=4, img_h=32, img_w=512,
                     train_list='data/dataset/train_list_uni.txt',val_list='data/dataset/train_list_uni.txt')
