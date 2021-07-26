@@ -34,14 +34,13 @@ class Encoder(pl.LightningModule):
     def forward(self, input):
         # conv features
         conv = self.cnn(input)
-
         # for i,l in enumerate(self.cnn):
         #     input = l(input)
         #     # if(i==21):
         #     #     print(l)
         #     #     print(input.permute(0,2,3,1)[0][0][0])
         # conv = input
-        # print(conv.permute(0,2,3,1)[0][0][0])
+        print(conv.permute(0,2,3,1)[0][0][0])
 
         b, c, h, w = conv.size()
         assert h == 1, "the height of conv must be 1"
